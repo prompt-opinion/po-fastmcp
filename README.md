@@ -149,3 +149,82 @@ Keep `FhirClient` generic and small. Tool-specific behavior should live in the
 tool module. For example, `tools/edit_demographics.py` reads a Patient, chooses
 the primary `HumanName`, updates first name, last name, and birth date, then
 calls `client.put("Patient", patient_id, patient_json)`.
+
+## Building UI Apps with MCP
+
+This repo also includes examples of rendering small interactive apps inside the
+chat experience. The app pattern is:
+
+1. Create a `FastMCPApp` in a tool module.
+2. Add a `@app.ui(...)` function that returns a `PrefabApp`.
+3. Use Prefab components to build the view.
+4. Use `PrefabApp(state={...})` for client-side state.
+5. Use `CallTool(...)` actions to call backend MCP tools from buttons or other
+   UI events.
+6. Use `SetState(...)` to update the UI after a tool returns.
+
+`tools/edit_demographics.py` is the main example. It renders a form that edits
+FHIR Patient demographics from inside the chat:
+
+```python
+@editDemographics_app.ui("EditPatientDemographics")
+async def edit_demographics() -> PrefabApp:
+    demographics = await get_current_demographics()
+
+    with Card() as view:
+        Input(name="first_name", required=True)
+        Input(name="last_name", required=True)
+        Input(input_type="date", name="birth_date", required=True)
+        Button("Update", on_click=submit_action)
+
+    return PrefabApp(view=view, state=_demographics_state(demographics))
+```
+
+The `state` dictionary is the client-side data store for the UI. In the
+demographics app, the initial state looks like:
+
+```python
+{
+    "first_name": "Alex",
+    "last_name": "Rivera",
+    "birth_date": "2000-02-01",
+}
+```
+
+Inputs with matching `name` values read from and write to those state keys. When
+the user edits the form, the latest values are available to actions with
+template expressions like `{{ first_name }}`.
+
+The Update button calls an MCP tool with the current state:
+
+```python
+submit_action = CallTool(
+    "UpdatePatientDemographics",
+    arguments={
+        "data": {
+            "first_name": "{{ first_name }}",
+            "last_name": "{{ last_name }}",
+            "birth_date": "{{ birth_date }}",
+        }
+    },
+)
+```
+
+After the update succeeds, the app calls a refresh tool and writes the returned
+FHIR values back into Prefab state:
+
+```python
+refresh_action = CallTool(
+    "RefreshPatientDemographics",
+    on_success=[
+        SetState("first_name", RESULT.first_name),
+        SetState("last_name", RESULT.last_name),
+        SetState("birth_date", RESULT.birth_date),
+    ],
+)
+```
+
+This keeps the UI synchronized with whatever the FHIR server actually saved.
+The same pattern works for non-FHIR workflows too: render a small form or
+dashboard, keep the editable values in `PrefabApp` state, call a backend MCP
+tool, then update state from the tool result.
